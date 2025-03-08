@@ -14,6 +14,7 @@ import {ZclPayload} from '../../events';
 import {ZBOSSDriver} from '../driver';
 import {CommandId, DeviceUpdateStatus} from '../enums';
 import {FrameType, ZBOSSFrame} from '../frame';
+import {WORKAROUND_JOIN_MANUF_IEEE_PREFIX_TO_CODE} from "../../const";
 
 const NS = 'zh:zboss';
 
@@ -29,6 +30,7 @@ export class ZBOSSAdapter extends Adapter {
     private queue: Queue;
     private readonly driver: ZBOSSDriver;
     private waitress: Waitress<ZclPayload, WaitressMatcher>;
+    private currentManufacturerCode: Zcl.ManufacturerCode
 
     constructor(
         networkOptions: TsType.NetworkOptions,
@@ -39,6 +41,7 @@ export class ZBOSSAdapter extends Adapter {
         super(networkOptions, serialPortOptions, backupPath, adapterOptions);
         this.hasZdoMessageOverhead = false;
         this.manufacturerID = Zcl.ManufacturerCode.NORDIC_SEMICONDUCTOR_ASA;
+        this.currentManufacturerCode = Zcl.ManufacturerCode.NORDIC_SEMICONDUCTOR_ASA;
         const concurrent = adapterOptions && adapterOptions.concurrent ? adapterOptions.concurrent : 8;
         logger.debug(`Adapter concurrent: ${concurrent}`, NS);
         this.queue = new Queue(concurrent);
@@ -248,6 +251,18 @@ export class ZBOSSAdapter extends Adapter {
                     payload = prefixedPayload;
                     break;
                 }
+                case Zdo.ClusterId.NODE_DESCRIPTOR_REQUEST: {
+                    // set workaround manuf code if necessary, or revert to default if previous joined device required workaround and new one does not
+                    const joinManufCode = WORKAROUND_JOIN_MANUF_IEEE_PREFIX_TO_CODE[ieeeAddress.substring(0, 8)] ?? this.manufacturerID;
+
+                    if (this.currentManufacturerCode !== joinManufCode) {
+                        logger.debug(`[WORKAROUND] Setting coordinator manufacturer code to ${Zcl.ManufacturerCode[joinManufCode]}.`, NS);
+
+                        await this.driver.execCommand(CommandId.ZDO_SET_NODE_DESC_MANUF_CODE, {manufacturerCode: joinManufCode});
+
+                        this.currentManufacturerCode = joinManufCode;
+                    }
+                }
             }
             switch (clusterId) {
                 case Zdo.ClusterId.BIND_REQUEST:
@@ -266,6 +281,14 @@ export class ZBOSSAdapter extends Adapter {
 
             if (!disableResponse && zdoResponseClusterId !== undefined) {
                 assert(frame, `ZDO ${Zdo.ClusterId[clusterId]} expected response ${Zdo.ClusterId[zdoResponseClusterId]}.`);
+
+                if (this.currentManufacturerCode !== this.manufacturerID) {
+                    logger.debug(`[WORKAROUND] Resetting coordinator manufacturer code to ${Zcl.ManufacturerCode[this.manufacturerID]}.`, NS);
+
+                    await this.driver.execCommand(CommandId.ZDO_SET_NODE_DESC_MANUF_CODE, {manufacturerCode: this.manufacturerID});
+
+                    this.currentManufacturerCode = this.manufacturerID;
+                }
 
                 return frame.payload.zdo as ZdoTypes.RequestToResponseMap[K];
             }
