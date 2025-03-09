@@ -14,6 +14,7 @@ import {ZclPayload} from '../../events';
 import {ZBOSSDriver} from '../driver';
 import {CommandId, DeviceUpdateStatus} from '../enums';
 import {FrameType, ZBOSSFrame} from '../frame';
+import {WORKAROUND_JOIN_MANUF_IEEE_PREFIX_TO_CODE} from "../../const";
 
 const NS = 'zh:zboss';
 
@@ -29,6 +30,7 @@ export class ZBOSSAdapter extends Adapter {
     private queue: Queue;
     private readonly driver: ZBOSSDriver;
     private waitress: Waitress<ZclPayload, WaitressMatcher>;
+    private currentManufacturerCode: Zcl.ManufacturerCode
 
     constructor(
         networkOptions: TsType.NetworkOptions,
@@ -39,6 +41,7 @@ export class ZBOSSAdapter extends Adapter {
         super(networkOptions, serialPortOptions, backupPath, adapterOptions);
         this.hasZdoMessageOverhead = false;
         this.manufacturerID = Zcl.ManufacturerCode.NORDIC_SEMICONDUCTOR_ASA;
+        this.currentManufacturerCode = Zcl.ManufacturerCode.NORDIC_SEMICONDUCTOR_ASA;
         const concurrent = adapterOptions && adapterOptions.concurrent ? adapterOptions.concurrent : 8;
         logger.debug(`Adapter concurrent: ${concurrent}`, NS);
         this.queue = new Queue(concurrent);
@@ -64,6 +67,17 @@ export class ZBOSSAdapter extends Adapter {
                             ieeeAddr: frame.payload.ieee,
                         });
                     } else {
+
+                        // set workaround manuf code if necessary, or revert to default if previous joined device required workaround and new one does not
+                        const joinManufCode = WORKAROUND_JOIN_MANUF_IEEE_PREFIX_TO_CODE[frame.payload.ieee.substring(0, 8)] ?? this.manufacturerID;
+
+                        if (this.currentManufacturerCode !== joinManufCode) {
+                            logger.debug(`[WORKAROUND] Setting coordinator manufacturer code to ${Zcl.ManufacturerCode[joinManufCode]}.`, NS);
+
+                            await this.driver.execCommand(CommandId.ZDO_SET_NODE_DESC_MANUF_CODE, {manufacturerCode: joinManufCode});
+
+                            this.currentManufacturerCode = joinManufCode;
+                        }
                         // SECURE_REJOIN, UNSECURE_JOIN, TC_REJOIN
                         this.emit('deviceJoined', {
                             networkAddress: frame.payload.nwk,
@@ -267,6 +281,14 @@ export class ZBOSSAdapter extends Adapter {
             if (!disableResponse && zdoResponseClusterId !== undefined) {
                 assert(frame, `ZDO ${Zdo.ClusterId[clusterId]} expected response ${Zdo.ClusterId[zdoResponseClusterId]}.`);
 
+                // if (this.currentManufacturerCode !== this.manufacturerID) {
+                //     logger.debug(`[WORKAROUND] Resetting coordinator manufacturer code to ${Zcl.ManufacturerCode[this.manufacturerID]}.`, NS);
+                //
+                //     await this.driver.execCommand(CommandId.ZDO_SET_NODE_DESC_MANUF_CODE, {manufacturerCode: this.manufacturerID});
+                //
+                //     this.currentManufacturerCode = this.manufacturerID;
+                // }
+                //
                 return frame.payload.zdo as ZdoTypes.RequestToResponseMap[K];
             }
         }, networkAddress);
@@ -316,14 +338,14 @@ export class ZBOSSAdapter extends Adapter {
         checkedNetworkAddress: boolean,
         discoveredRoute: boolean,
         assocRemove: boolean,
-        assocRestore: {ieeeadr: string; nwkaddr: number; noderelation: number} | null,
+        assocRestore: { ieeeadr: string; nwkaddr: number; noderelation: number } | null,
     ): Promise<ZclPayload | void> {
         if (ieeeAddr == null) {
             ieeeAddr = this.driver.netInfo.ieeeAddr;
         }
         logger.debug(
             `sendZclFrameToEndpointInternal ${ieeeAddr}:${networkAddress}/${endpoint} ` +
-                `(${responseAttempt},${dataRequestAttempt},${this.queue.count()}), timeout=${timeout}`,
+            `(${responseAttempt},${dataRequestAttempt},${this.queue.count()}), timeout=${timeout}`,
             NS,
         );
         let response = null;
@@ -452,7 +474,7 @@ export class ZBOSSAdapter extends Adapter {
         clusterID: number,
         commandIdentifier: number,
         timeout: number,
-    ): {start: () => {promise: Promise<ZclPayload>}; cancel: () => void} {
+    ): { start: () => { promise: Promise<ZclPayload> }; cancel: () => void } {
         const waiter = this.waitress.waitFor(
             {
                 address: networkAddress,
@@ -476,7 +498,7 @@ export class ZBOSSAdapter extends Adapter {
         clusterID: number,
         commandIdentifier: number,
         timeout: number,
-    ): {promise: Promise<ZclPayload>; cancel: () => void} {
+    ): { promise: Promise<ZclPayload>; cancel: () => void } {
         const waiter = this.waitForInternal(networkAddress, endpoint, transactionSequenceNumber, clusterID, commandIdentifier, timeout);
 
         return {cancel: waiter.cancel, promise: waiter.start().promise};
