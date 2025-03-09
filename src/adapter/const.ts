@@ -1,4 +1,4 @@
-import * as Zcl from '../../../zspec/zcl';
+import * as Zcl from '../zspec/zcl';
 
 /**
  * Workaround for devices that require a specific manufacturer code to be reported by coordinator while interviewing...
